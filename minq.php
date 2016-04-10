@@ -6,7 +6,6 @@ namespace minq;
 
 class DependencyFlags {
     const Singleton = 1;
-    const Service = 1;
 }
 
 interface IDependencyFactory {
@@ -15,7 +14,7 @@ interface IDependencyFactory {
 }
 
 interface IActivator {
-    public function createInstance($className); // next arguments = contructor parameters
+    public function createInstance($className); // next arguments = constructor parameters
     public function createInstanceArgs($className, array $constructorArgs);
 }
 
@@ -26,13 +25,6 @@ interface IDependencyContainer {
 interface IDependencyInjector {
     public function injectInto($object, IDependencyContainer $container);
 }
-
-/*
-    public function registerInstance($type, $instance);
-    public function registerFactory(IDependencyFactory $factory);
-    public function register($type, $createCallback, $flags);
-    public function registerClass($type, $implementingClassName, array $constructorParams = [], $flags);
-}*/
 
 class RegistryBasedDependencyFactory implements IDependencyFactory {
     protected $types = [];
@@ -138,6 +130,24 @@ class Controller implements IActionProcessor {
 
     }
 }
+
+class Route {
+    public $controllerId;
+    public $actionId;
+    public $params = [];
+}
+
+interface IRoutingService {
+    public function getRouteUrl(Route $route);
+    public function getRouteFromRequest(); // return route from request or default route
+}
  
 class Application {
+    public function executeRoute(Route $route, ActionContext $actionContext) {
+
+    }
+
+    public function executeCurrentRequest() {
+
+    }
 }
