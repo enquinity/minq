@@ -117,16 +117,15 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     }
 }
 
-class ActionContext {
 
-}
+class RequestContext {
+    protected $session;
+    protected $get;
+    protected $post;
+    protected $files;
+    protected $cookies;
 
-interface IActionProcessor {
-    public function processAction($actionId, array $actionParams, ActionContext $actionContext);
-}
-
-class Controller implements IActionProcessor {
-    public function processAction($actionId, array $actionParams, ActionContext $actionContext) {
+    public static function createFromCurrentRequest() {
 
     }
 }
@@ -137,17 +136,167 @@ class Route {
     public $params = [];
 }
 
+interface IViewManager {
+    public function loadViewFromFile($viewFileName);
+    public function loadView($controllerId, $actionId, $viewId);
+}
+
+interface IActionProcessor {
+    public function processRoute(Route $route, RequestContext $actionContext);
+}
+
+// TODO: zamienić na route builder lub po prostu na route? lub route builder extends route
+class UrlBuilder {
+    /**
+     * @var Route
+     */
+    protected $route;
+
+    /**
+     * @var IRoutingService
+     */
+    protected $router;
+
+    public function __construct(IRoutingService $router, $controllerId = null, $actionId = null) {
+        $this->route = new Route();
+        $this->route->controllerId = $controllerId;
+        $this->route->actionId = $actionId;
+        $this->router = $router;
+    }
+
+    /**
+     * @param $controllerId
+     * @return $this
+     */
+    public function ctrl($controllerId) {
+        $this->route->controllerId = $controllerId;
+        return $this;
+    }
+
+    /**
+     * @param $actionId
+     * @return $this
+     */
+    public function action($actionId) {
+        $this->route->actionId = $actionId;
+        return $this;
+    }
+
+    /**
+     * @return $this
+     */
+    public function params() {
+        $this->route->params = func_get_args();
+        return $this;
+    }
+
+    public function getUrl() {
+        return $this->router->getRouteUrl($this->route);
+    }
+
+    public function __toString() {
+        return $this->getUrl();
+    }
+}
+
+class Controller implements IActionProcessor {
+    /**
+     * @var RequestContext
+     */
+    protected $request;
+
+    /**
+     * @var Route
+     */
+    protected $currentRoute;
+
+    /**
+     * @var Application
+     * @inject
+     */
+    protected $application;
+
+    /**
+     * @var IRoutingService
+     * @inject
+     */
+    protected $routingService;
+
+    /**
+     * @var IViewManager
+     * @inject
+     */
+    protected $viewManager;
+
+    protected $viewData = [];
+
+    public function processRoute(Route $route, RequestContext $actionContext) {
+        $savedRequest = $this->request;
+        $savedRoute = $this->currentRoute;
+
+        $this->request = $actionContext;
+        $this->currentRoute = $route;
+
+        $methodName = '';
+        // trzeba obliczyć nazwę metody z nazwy akcji
+        $result = call_user_func_array([$this, $methodName], $route->params);
+
+        if ($result instanceof UrlBuilder) {
+            $url = $result->getUrl();
+            header("Location: " . $url);
+        } else {
+            //...
+        }
+
+        // tu przetwarzamy wynik wywolania [if result inst of view => render view]
+        $this->request = $savedRequest;
+        $this->currentRoute = $savedRoute;
+    }
+
+    /**
+     * @param string $actionId
+     * @return UrlBuilder
+     */
+    public function redirect($actionId = null) {
+        $urlBuilder = new UrlBuilder($this->routingService, $this->currentRoute->controllerId, $actionId);
+        return $urlBuilder;
+    }
+
+    public function view($viewId = null) {
+        // zwraca obiekt IView, renderowanie jest w process action
+        $actionId = '';
+        $viewId = '';
+        $view = $this->viewManager->loadView($this->currentRoute->controllerId, $actionId, $viewId);
+        // przekazanie danych viewData do widoku
+        return $view;
+    }
+}
+
+
 interface IRoutingService {
     public function getRouteUrl(Route $route);
+
+    /**
+     * @return Route
+     */
     public function getRouteFromRequest(); // return route from request or default route
 }
  
 class Application {
-    public function executeRoute(Route $route, ActionContext $actionContext) {
-
+    public function executeRoute(Route $route, RequestContext $actionContext) {
+        $ap = $this->getActionProcessor($route);
+        return $ap->processRoute($route, $actionContext);
     }
 
     public function executeCurrentRequest() {
+
+    }
+
+    /**
+     * @param Route $route
+     * @return IActionProcessor
+     */
+    protected function getActionProcessor(Route $route) {
 
     }
 }
