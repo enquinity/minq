@@ -38,12 +38,9 @@ class StrUtils {
     }
 }
 
-
-
 class DependencyFlags {
     const Singleton = 1;
 }
-
 
 interface IDependencyFactory {
     public function createDependency($type, IDependencyContainer $container, IActivator $activator);
@@ -63,12 +60,12 @@ interface IDependencyInjector {
     public function injectInto($object, IDependencyContainer $container);
 }
 
-interface IClassDependencyInfo {
+/*interface IClassDependencyInfo {
     /**
      * @return array array(array(property name, dependency type, flags))
-     */
+     * /
     public function getPropertyInjections($className);
-}
+}*/
 
 class RegistryBasedDependencyFactory implements IDependencyFactory {
     protected $types = [];
@@ -95,7 +92,7 @@ class RegistryBasedDependencyFactory implements IDependencyFactory {
     }
 }
 
-class StdClassDependencyInfo implements IClassDependencyInfo {
+/*class StdClassDependencyInfo implements IClassDependencyInfo {
     public function getPropertyInjections($className) {
         $info = [];
         $reflClass = new \ReflectionClass($className);
@@ -116,7 +113,7 @@ class StdClassDependencyInfo implements IClassDependencyInfo {
         }
         return $info;
     }
-}
+}*/
 
 class DependencyContainer implements IDependencyContainer, IActivator {
     protected $singletons = [];
@@ -184,6 +181,28 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     }
 }
 
+class StdDependencyInjector implements IDependencyInjector {
+    public function injectInto($object, IDependencyContainer $container) {
+        $reflClass = new \ReflectionClass($object);
+        $nsName = $reflClass->getNamespaceName();
+        foreach ($reflClass->getProperties() as $reflProperty) {
+            $dc = $reflProperty->getDocComment();
+            $injectAnnotation = StrUtils::getAnnotationValue($dc, 'inject');
+            if ($injectAnnotation !== null) {
+                $type = StrUtils::getAnnotationValue($dc, 'var');
+                if ($type !== null) {
+                    $pdc = $reflProperty->getDeclaringClass();
+                    $ns = $pdc == $reflClass ? $nsName : $pdc->getNamespaceName();
+                    if ('\\' !== $type[0] && !empty($ns)) $type = $ns . '\\' . $type;
+                    if ('\\' == $type[0]) $type = substr($type, 1);
+
+                    $reflProperty->setAccessible(true);
+                    $reflProperty->setValue($object, $container->resolve($type));
+                }
+            }
+        }
+    }
+}
 
 class RequestContext {
     protected $session;
@@ -212,23 +231,16 @@ interface IActionProcessor {
     public function processRoute(Route $route, RequestContext $actionContext);
 }
 
-// TODO: zamienić na route builder lub po prostu na route? lub route builder extends route
-class UrlBuilder {
+class ActionResultRedirectToRoute {
     /**
      * @var Route
      */
     protected $route;
 
-    /**
-     * @var IRoutingService
-     */
-    protected $router;
-
-    public function __construct(IRoutingService $router, $controllerId = null, $actionId = null) {
+    public function __construct($controllerId = null, $actionId = null) {
         $this->route = new Route();
         $this->route->controllerId = $controllerId;
         $this->route->actionId = $actionId;
-        $this->router = $router;
     }
 
     /**
@@ -257,12 +269,11 @@ class UrlBuilder {
         return $this;
     }
 
-    public function getUrl() {
-        return $this->router->getRouteUrl($this->route);
-    }
-
-    public function __toString() {
-        return $this->getUrl();
+    /**
+     * @return Route
+     */
+    public function getRoute() {
+        return $this->route;
     }
 }
 
@@ -308,8 +319,8 @@ class Controller implements IActionProcessor {
         // trzeba obliczyć nazwę metody z nazwy akcji
         $result = call_user_func_array([$this, $methodName], $route->params);
 
-        if ($result instanceof UrlBuilder) {
-            $url = $result->getUrl();
+        if ($result instanceof ActionResultRedirectToRoute) {
+            $url = $this->routingService->getRouteUrl($result->getRoute());
             header("Location: " . $url);
         } else {
             //...
@@ -322,10 +333,10 @@ class Controller implements IActionProcessor {
 
     /**
      * @param string $actionId
-     * @return UrlBuilder
+     * @return ActionResultRedirectToRoute
      */
     public function redirect($actionId = null) {
-        $urlBuilder = new UrlBuilder($this->routingService, $this->currentRoute->controllerId, $actionId);
+        $urlBuilder = new ActionResultRedirectToRoute($this->currentRoute->controllerId, $actionId);
         return $urlBuilder;
     }
 
