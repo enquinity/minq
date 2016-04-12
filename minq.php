@@ -4,9 +4,46 @@
  */
 namespace minq;
 
+class StrUtils {
+    public static function camelCaseToSpinalCase($ccStr) {
+        $spinal = '';
+        for ($i = 0, $len = strlen($ccStr); $i < $len; $i++) {
+            if ($ccStr[$i] >= 'A' && $ccStr[$i] <= 'Z' && $i > 0) {
+                $spinal .= '-';
+            }
+            $spinal .= $ccStr[$i];
+        }
+        return strtolower($spinal);
+    }
+
+    public static function spinalCaseToCamelCase($scStr, $toPascalCase = false) {
+        $str = implode('', array_map('ucfirst', explode('-', $scStr)));
+        if (!$toPascalCase) $str = lcfirst($str);
+        return $str;
+    }
+
+    public static function getAnnotationValue($docComment, $annotationName) {
+        $dcl = strlen($docComment);
+        for ($p = -1; true;) {
+            $p = strpos($docComment, '@' . $annotationName, $p + 1);
+            if ($p === false) return null;
+            $nextCharPos = $p + 1 + strlen($annotationName);
+            if ($dcl == $nextCharPos) return true;
+            if (!ctype_space($docComment[$nextCharPos])) continue; // its not this annotation
+            $valEndPos = strpos($docComment, "\n", $nextCharPos);
+            $value = $valEndPos === false ? substr($docComment, $nextCharPos) : substr($docComment, $nextCharPos, $valEndPos - $nextCharPos + 1);
+            $value = trim($value);
+            return empty($value) ? true : $value;
+        }
+    }
+}
+
+
+
 class DependencyFlags {
     const Singleton = 1;
 }
+
 
 interface IDependencyFactory {
     public function createDependency($type, IDependencyContainer $container, IActivator $activator);
@@ -24,6 +61,13 @@ interface IDependencyContainer {
 
 interface IDependencyInjector {
     public function injectInto($object, IDependencyContainer $container);
+}
+
+interface IClassDependencyInfo {
+    /**
+     * @return array array(array(property name, dependency type, flags))
+     */
+    public function getPropertyInjections($className);
 }
 
 class RegistryBasedDependencyFactory implements IDependencyFactory {
@@ -48,6 +92,29 @@ class RegistryBasedDependencyFactory implements IDependencyFactory {
     public function getDependencyFlags($type) {
         if (!isset($this->types[$type])) return null;
         $this->types[$type]['f'];
+    }
+}
+
+class StdClassDependencyInfo implements IClassDependencyInfo {
+    public function getPropertyInjections($className) {
+        $info = [];
+        $reflClass = new \ReflectionClass($className);
+        $nsName = $reflClass->getNamespaceName();
+        foreach ($reflClass->getProperties() as $reflProperty) {
+            $dc = $reflProperty->getDocComment();
+            $injectAnnotation = StrUtils::getAnnotationValue($dc, 'inject');
+            if ($injectAnnotation !== null) {
+                $type = StrUtils::getAnnotationValue($dc, 'var');
+                if ($type !== null) {
+                    $pdc = $reflProperty->getDeclaringClass();
+                    $ns = $pdc == $reflClass ? $nsName : $pdc->getNamespaceName();
+                    if ('\\' !== $type[0] && !empty($ns)) $type = $ns . '\\' . $type;
+                    if ('\\' == $type[0]) $type = substr($type, 1);
+                    $info[] = [$reflProperty->getName(), $type, $injectAnnotation];
+                }
+            }
+        }
+        return $info;
     }
 }
 
