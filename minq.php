@@ -76,10 +76,15 @@ class RegistryBasedDependencyFactory implements IDependencyFactory {
     public function registerClass($type, $implementingClassName, array $constructorParams = [], $flags = DependencyFlags::Singleton) {
         $this->types[$type] = ['cl' => $implementingClassName, 'cp' => $constructorParams, 'f' =>$flags];
     }
+    public function registerObject($type, $object, $flags = DependencyFlags::Singleton) {
+        $this->types[$type] = ['obj' => $object, 'f' => $flags];
+    }
     public function createDependency($type, IDependencyContainer $container, IActivator $activator) {
         if (!isset($this->types[$type])) return null;
         $t = $this->types[$type];
-        if (isset($t['cb'])) {
+        if (isset($t['obj'])) {
+            return $t['obj'];
+        } elseif (isset($t['cb'])) {
             return call_user_func($t['cb'], $type, $container, $activator);
         } elseif (!empty($t['cl'])) {
             return $activator->createInstanceArgs($t['cl'], $t['cp']);
@@ -134,7 +139,7 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     }
 
     /**
-     * @return IDependencyFactory
+     * @return RegistryBasedDependencyFactory
      */
     public function registration() {
         return $this->factories[0];
@@ -204,6 +209,11 @@ class StdDependencyInjector implements IDependencyInjector {
     }
 }
 
+class RequestResponse {
+    public $headers = [];
+    public $responseText;
+}
+
 class RequestContext {
     protected $session;
     protected $get;
@@ -228,6 +238,11 @@ interface IViewManager {
 }
 
 interface IActionProcessor {
+    /**
+     * @param Route          $route
+     * @param RequestContext $actionContext
+     * @return RequestResponse
+     */
     public function processRoute(Route $route, RequestContext $actionContext);
 }
 
@@ -315,8 +330,13 @@ class Controller implements IActionProcessor {
         $this->request = $actionContext;
         $this->currentRoute = $route;
 
-        $methodName = '';
-        // trzeba obliczyć nazwę metody z nazwy akcji
+        $methodName = StrUtils::spinalCaseToCamelCase($route->actionId);
+        if (!method_exists($this, $methodName)) {
+            $methodName .= 'Action';
+        }
+        if (!method_exists($this, $methodName)) {
+            throw new \Exception(sprintf('Unable to process action in controller %s (class %s): action method does not exist', $route->actionId, $route->controllerId, get_class($this)));
+        }
         $result = call_user_func_array([$this, $methodName], $route->params);
 
         if ($result instanceof ActionResultRedirectToRoute) {
@@ -325,7 +345,6 @@ class Controller implements IActionProcessor {
         } else {
             //...
         }
-
         // tu przetwarzamy wynik wywolania [if result inst of view => render view]
         $this->request = $savedRequest;
         $this->currentRoute = $savedRoute;
@@ -361,13 +380,26 @@ interface IRoutingService {
 }
  
 class Application {
+
+    /**
+     * @var IDependencyContainer
+     */
+    protected $dc;
+
+    public function __construct() {
+        $this->dc = new DependencyContainer(new StdDependencyInjector());
+    }
+
     public function executeRoute(Route $route, RequestContext $actionContext) {
         $ap = $this->getActionProcessor($route);
         return $ap->processRoute($route, $actionContext);
     }
 
     public function executeCurrentRequest() {
-
+        /* @var $routingSvc IRoutingService */
+        $routingSvc = $this->dc->resolve(IRoutingService::class);
+        $route = $routingSvc->getRouteFromRequest();
+        return $this->executeRoute($route, RequestContext::createFromCurrentRequest());
     }
 
     /**
