@@ -210,8 +210,21 @@ class StdDependencyInjector implements IDependencyInjector {
 }
 
 class RequestResponse {
-    public $headers = [];
+    protected $headers = [];
     public $responseText;
+
+    public function setHeader($name, $value) {
+        $this->headers[$name] = $value;
+    }
+
+    public function getHeaders() {return $this->headers;}
+
+    public function flush() {
+        foreach ($this->headers as $name => $value) {
+            header($name . ': ' . $value);
+        }
+        echo $this->responseText;
+    }
 }
 
 class RequestContext {
@@ -339,15 +352,17 @@ class Controller implements IActionProcessor {
         }
         $result = call_user_func_array([$this, $methodName], $route->params);
 
+        $response = new RequestResponse();
         if ($result instanceof ActionResultRedirectToRoute) {
             $url = $this->routingService->getRouteUrl($result->getRoute());
-            header("Location: " . $url);
+            $response->setHeader("Location", $url);
         } else {
             //...
         }
         // tu przetwarzamy wynik wywolania [if result inst of view => render view]
         $this->request = $savedRequest;
         $this->currentRoute = $savedRoute;
+        return $response;
     }
 
     /**
@@ -388,6 +403,9 @@ class Application {
 
     public function __construct() {
         $this->dc = new DependencyContainer(new StdDependencyInjector());
+        $this->dc->registration()->registerObject(Application::class, $this);
+        $this->dc->registration()->registerObject(IDependencyContainer::class, $this->dc);
+        $this->dc->registration()->registerObject(IActivator::class, $this->dc);
     }
 
     public function executeRoute(Route $route, RequestContext $actionContext) {
@@ -399,7 +417,8 @@ class Application {
         /* @var $routingSvc IRoutingService */
         $routingSvc = $this->dc->resolve(IRoutingService::class);
         $route = $routingSvc->getRouteFromRequest();
-        return $this->executeRoute($route, RequestContext::createFromCurrentRequest());
+        $response = $this->executeRoute($route, RequestContext::createFromCurrentRequest());
+        $response->flush();
     }
 
     /**
