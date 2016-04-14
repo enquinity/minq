@@ -227,6 +227,24 @@ class RequestResponse {
     }
 }
 
+interface IPropertyBag {
+    public function __get($name);
+    public function __set($name, $value);
+    public function __isset($name);
+}
+
+class ArrayPropertyBag implements IPropertyBag {
+    protected $__data;
+
+    public function __construct(array &$data) {
+        $this->__data =& $data;
+    }
+
+    public function __get($name) {return array_key_exists($name, $this->__data) ? $this->__data[$name] : null;}
+    public function __set($name, $value) {$this->__data[$name] = $value;}
+    public function __isset($name) {return array_key_exists($name, $this->__data);}
+}
+
 class RequestContext {
     protected $session;
     protected $get;
@@ -234,8 +252,16 @@ class RequestContext {
     protected $files;
     protected $cookies;
 
+    /**
+     * @return self
+     */
     public static function createFromCurrentRequest() {
-
+        $obj = new self();
+        $obj->session = new ArrayPropertyBag($_SESSION);
+        $obj->get = new ArrayPropertyBag($_GET);
+        $obj->post = new ArrayPropertyBag($_POST);
+        $obj->files = new ArrayPropertyBag($_FILES);
+        $obj->cookies = new ArrayPropertyBag($_COOKIE);
     }
 }
 
@@ -305,6 +331,10 @@ class ActionResultRedirectToRoute {
     }
 }
 
+class ActionResultView {
+
+}
+
 class Controller implements IActionProcessor {
     /**
      * @var RequestContext
@@ -334,8 +364,6 @@ class Controller implements IActionProcessor {
      */
     protected $viewManager;
 
-    protected $viewData = [];
-
     public function processRoute(Route $route, RequestContext $actionContext) {
         $savedRequest = $this->request;
         $savedRoute = $this->currentRoute;
@@ -356,10 +384,11 @@ class Controller implements IActionProcessor {
         if ($result instanceof ActionResultRedirectToRoute) {
             $url = $this->routingService->getRouteUrl($result->getRoute());
             $response->setHeader("Location", $url);
+        } elseif ($result instanceof ActionResultView) {
+            //...
         } else {
             //...
         }
-        // tu przetwarzamy wynik wywolania [if result inst of view => render view]
         $this->request = $savedRequest;
         $this->currentRoute = $savedRoute;
         return $response;
@@ -374,7 +403,7 @@ class Controller implements IActionProcessor {
         return $urlBuilder;
     }
 
-    public function view($viewId = null) {
+    public function view($viewData, $viewId = null) {
         // zwraca obiekt IView, renderowanie jest w process action
         $actionId = '';
         $viewId = '';
@@ -393,19 +422,45 @@ interface IRoutingService {
      */
     public function getRouteFromRequest(); // return route from request or default route
 }
+
+interface IApplicationFileStructure {
+    public function getControllerFilePath($controllerId);
+    public function getViewFilePath($controllerId, $viewId);
+    public function getLayoutFilePath($layoutId);
+}
+
+class StdApplicationFileStructure implements IApplicationFileStructure {
+    public function getControllerFilePath($controllerId) {
+        return sprintf('vc/controllers/%s.php', $controllerId);
+    }
+
+    public function getViewFilePath($controllerId, $viewId) {
+        return sprintf('vc/views/%s/%s.tpl', $controllerId, $viewId);
+    }
+
+    public function getLayoutFilePath($layoutId) {
+        return sprintf('vc/views/_layouts/%s.tpl', $layoutId);
+    }
+}
  
 class Application {
 
     /**
-     * @var IDependencyContainer
+     * @var DependencyContainer
      */
     protected $dc;
 
-    public function __construct() {
+    /**
+     * @var IApplicationFileStructure
+     */
+    protected $fileStructure;
+
+    public function __construct(IApplicationFileStructure $fileStructure = null) {
         $this->dc = new DependencyContainer(new StdDependencyInjector());
         $this->dc->registration()->registerObject(Application::class, $this);
         $this->dc->registration()->registerObject(IDependencyContainer::class, $this->dc);
         $this->dc->registration()->registerObject(IActivator::class, $this->dc);
+        $this->fileStructure = $fileStructure ? $fileStructure : new StdApplicationFileStructure();
     }
 
     public function executeRoute(Route $route, RequestContext $actionContext) {
@@ -426,6 +481,10 @@ class Application {
      * @return IActionProcessor
      */
     protected function getActionProcessor(Route $route) {
-
+        $controllerFile = $this->fileStructure->getControllerFilePath($route->controllerId);
+        require_once($controllerFile);
+        $controllerClass = StrUtils::spinalCaseToCamelCase($route->controllerId, true) . 'Controller';
+        $controllerInstance = $this->dc->createInstance($controllerClass);
+        return $controllerInstance;
     }
 }
