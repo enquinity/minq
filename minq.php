@@ -60,13 +60,6 @@ interface IDependencyInjector {
     public function injectInto($object, IDependencyContainer $container);
 }
 
-/*interface IClassDependencyInfo {
-    /**
-     * @return array array(array(property name, dependency type, flags))
-     * /
-    public function getPropertyInjections($className);
-}*/
-
 class RegistryBasedDependencyFactory implements IDependencyFactory {
     protected $types = [];
 
@@ -97,29 +90,6 @@ class RegistryBasedDependencyFactory implements IDependencyFactory {
     }
 }
 
-/*class StdClassDependencyInfo implements IClassDependencyInfo {
-    public function getPropertyInjections($className) {
-        $info = [];
-        $reflClass = new \ReflectionClass($className);
-        $nsName = $reflClass->getNamespaceName();
-        foreach ($reflClass->getProperties() as $reflProperty) {
-            $dc = $reflProperty->getDocComment();
-            $injectAnnotation = StrUtils::getAnnotationValue($dc, 'inject');
-            if ($injectAnnotation !== null) {
-                $type = StrUtils::getAnnotationValue($dc, 'var');
-                if ($type !== null) {
-                    $pdc = $reflProperty->getDeclaringClass();
-                    $ns = $pdc == $reflClass ? $nsName : $pdc->getNamespaceName();
-                    if ('\\' !== $type[0] && !empty($ns)) $type = $ns . '\\' . $type;
-                    if ('\\' == $type[0]) $type = substr($type, 1);
-                    $info[] = [$reflProperty->getName(), $type, $injectAnnotation];
-                }
-            }
-        }
-        return $info;
-    }
-}*/
-
 class DependencyContainer implements IDependencyContainer, IActivator {
     protected $singletons = [];
 
@@ -134,7 +104,7 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     protected $factories = [];
 
     public function __construct(IDependencyInjector $injector) {
-        $this->factories[] = new RegistryBasedDependencyFactory();
+        $this->factories[0] = new RegistryBasedDependencyFactory();
         $this->injector = $injector;
     }
 
@@ -246,11 +216,11 @@ class ArrayPropertyBag implements IPropertyBag {
 }
 
 class RequestContext {
-    protected $session;
-    protected $get;
-    protected $post;
-    protected $files;
-    protected $cookies;
+    public $session;
+    public $get;
+    public $post;
+    public $files;
+    public $cookies;
 
     /**
      * @return self
@@ -262,6 +232,7 @@ class RequestContext {
         $obj->post = new ArrayPropertyBag($_POST);
         $obj->files = new ArrayPropertyBag($_FILES);
         $obj->cookies = new ArrayPropertyBag($_COOKIE);
+        return $obj;
     }
 }
 
@@ -371,14 +342,20 @@ class Controller implements IActionProcessor {
         $this->request = $actionContext;
         $this->currentRoute = $route;
 
-        $methodName = StrUtils::spinalCaseToCamelCase($route->actionId);
-        if (!method_exists($this, $methodName)) {
-            $methodName .= 'Action';
-        }
+        $methodName = StrUtils::spinalCaseToCamelCase($route->actionId) . 'Action';
         if (!method_exists($this, $methodName)) {
             throw new \Exception(sprintf('Unable to process action in controller %s (class %s): action method does not exist', $route->actionId, $route->controllerId, get_class($this)));
         }
-        $result = call_user_func_array([$this, $methodName], $route->params);
+        $reflMethod = new \ReflectionMethod($this, $methodName);
+        $methodParams = $route->params;
+        $mpk = -1;
+        foreach ($reflMethod->getParameters() as $reflParam) {
+            $mpk++;
+            $name = $reflParam->getName();
+            if (array_key_exists($name, $route->params)) $methodParams[$mpk] = $route->params[$name];
+            elseif (isset($actionContext->get->$name)) $methodParams[$mpk] = $actionContext->get->$name;
+        }
+        $result = call_user_func_array([$this, $methodName], $methodParams);
 
         $response = new RequestResponse();
         if ($result instanceof ActionResultRedirectToRoute) {
@@ -387,7 +364,7 @@ class Controller implements IActionProcessor {
         } elseif ($result instanceof ActionResultView) {
             //...
         } else {
-            //...
+            $response->responseText = (string)$result;
         }
         $this->request = $savedRequest;
         $this->currentRoute = $savedRoute;
@@ -411,6 +388,10 @@ class Controller implements IActionProcessor {
         // przekazanie danych viewData do widoku
         return $view;
     }
+}
+
+interface ILayoutController {
+    public function render(array $renderedViewSections);
 }
 
 
