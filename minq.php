@@ -243,7 +243,18 @@ class Route {
 }
 
 interface IViewManager {
+    /**
+     * @param $viewFileName
+     * @return IView
+     */
     public function loadViewFromFile($viewFileName);
+
+    /**
+     * @param $controllerId
+     * @param $actionId
+     * @param $viewId
+     * @return IView
+     */
     public function loadView($controllerId, $actionId, $viewId);
 }
 
@@ -394,6 +405,139 @@ interface ILayoutController {
     public function render(array $renderedViewSections);
 }
 
+interface IView {
+    public function render();
+}
+
+class StdViewTemplateOutput {
+    protected $contents = [];
+    protected $nameStack = [];
+    protected $current = null;
+
+    public function switchTo($name) {
+        if (!empty($this->current)) {
+            $this->contents[$this->current] = ob_get_contents();
+            ob_clean();
+            if (null === $name) {
+                ob_end();
+            }
+        } elseif (null !== $name) {
+            ob_start();
+        }
+        $this->current = $name;
+    }
+
+    public function openBlock($name) {
+        $this->nameStack[] = $this->current;
+        $this->switchTo($name);
+    }
+
+    public function closeBlock() {
+        $lastName = array_pop($this->nameStack);
+        $this->switchTo($lastName);
+    }
+
+    public function getContents() {
+        return $this->contents;
+    }
+}
+
+class StdViewTemplate {
+    /**
+     * @var Route
+     */
+    protected $currentRoute;
+
+    public function init(Route $currentRoute) {
+        $this->currentRoute = $currentRoute;
+    }
+
+    protected function renderField($fieldValue, $param1, $param2, $param3) {
+        return $fieldValue;
+    }
+}
+
+class TplSyntaxErrorException extends \Exception {}
+
+class StdViewTemplateFactory {
+    protected $loadedCache = [];
+
+    public function loadFromString($content, $defaultClassName = null, $defaultNs = null, $defaultBaseClass = StdViewTemplate::class, $renderMethodName = 'render') {
+        if (empty($defaultClassName)) $defaultClassName = 'minqtpl_' . abs(crc32($content));
+        $cls = $this->loadClass($content, null, $defaultClassName, $defaultNs, $defaultBaseClass, $renderMethodName);
+        $instance = new $cls();
+        return $instance;
+    }
+
+    public function loadFromFile($fileName, $defaultClassName = null, $defaultNs = null, $defaultBaseClass = StdViewTemplate::class, $renderMethodName = 'render') {
+        if (empty($defaultClassName)) $defaultClassName = 'minqtpl_' . strtr($fileName, ['.' => '_', '/' => '_', '\\' => '_', ':' => '_', '-' => '_']);
+        $cls = $this->loadClass(file_get_contents($fileName), $fileName, $defaultClassName, $defaultNs, $defaultBaseClass, $renderMethodName);
+        $instance = new $cls();
+        return $instance;
+    }
+
+    protected function loadClass($contents, $fileName, $defaultClassName, $defaultNs, $defaultBaseClass, $renderMethodName) {
+        $tplSettings = [];
+        $php = '';
+        if ('<?tpl' == substr($contents, 0, 5)) {
+            $p = strpos($contents, '?>');
+            if (false === $p) throw new TplSyntaxErrorException(!empty($fileName) ? "Tpl syntax error in file $fileName - unclosed tag <?tpl": "Tpl syntax error - unclosed tag <?tpl");
+            $ic = substr($contents, 6, $p - 6);
+            foreach (explode(' ', $ic) as $part) {
+                if (empty($part)) continue;
+                list ($k, $v) = explode(':', $part, 2);
+                $tplSettings[$k] = $v;
+            }
+            $contents = substr($contents, $p + 2);
+        }
+        if (empty($tplSettings['class'])) $tplSettings['class'] = $defaultClassName;
+        if (empty($tplSettings['ns'])) $tplSettings['ns'] = $defaultNs;
+        if (empty($tplSettings['base'])) $tplSettings['base'] = $defaultBaseClass;
+
+        $fullClassName = !empty($tplSettings['ns']) ? $tplSettings['ns'] . '\\' . $tplSettings['class'] : $tplSettings['class'];
+        if (isset($this->loadedCache[$fullClassName])) {
+            return $fullClassName;
+        }
+
+        if (!empty($tplSettings['ns'])) $php .= 'namespace ' . $tplSettings['ns'] . ";";
+        $php .= 'class ' . $tplSettings['class'] . ' extends ' . $tplSettings['base'] . ' { ';
+
+        $p = strpos($contents, '<?php');
+        if (false !== $p) {
+            $pend = strpos($contents, '?>', $p);
+            $php .= substr($contents, $p + 5, $pend - $p - 5);
+            $contents = substr($contents, 0, $p) . substr($contents, $pend + 2);
+        }
+        $contents = strtr($contents, ['<?' => '<?php ', '<?=' => '<?php echo ', '{{' => '<?php echo $this->renderField(', '}}' => ');?>']);
+
+        $php .= "public function __render(\\minq\\StdViewTemplateOutput \$output) { ";
+        $php .= ' ?' . '>' . $contents . '<' . "?php ";
+        $php .= "} ";
+        $php .= "public function $renderMethodName() { ";
+        $php .= " \$out = new \\minq\\StdViewTemplateOutput();";
+        $php .= " \$out->openBlock('default');";
+        $php .= " \$this->__render(\$out);";
+        $php .= " \$out->closeBlock();";
+        $php .= " return \$out->getContents();";
+        $php .= "} ";
+        $php .= '}';
+
+        $result = eval($php);
+        if (false === $result) {
+            throw new TplSyntaxErrorException(!empty($fileName) ? "Tpl syntax error in file $fileName": "Tpl syntax error");
+        }
+        $this->loadedCache[$fullClassName] = true;
+        return $fullClassName;
+    }
+}
+
+class StdViewTemplateView implements IView {
+    protected $template;
+
+    public function render() {
+        
+    }
+}
 
 interface IRoutingService {
     public function getRouteUrl(Route $route);
