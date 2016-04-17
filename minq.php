@@ -47,6 +47,62 @@ interface IDependencyDescriptor {
     public function createDependency(IDependencyContainer $container, IActivator $activator);
 }
 
+class ObjectDependency implements IDependencyDescriptor {
+    protected $object;
+    protected $flags;
+
+    public function __construct($object, $flags = DependencyFlags::Singleton) {
+        $this->object = $object;
+        $this->flags = $flags;
+    }
+
+    public function getDependencyFlags() {
+        return $this->flags;
+    }
+
+    public function createDependency(IDependencyContainer $container, IActivator $activator) {
+        return $this->object;
+    }
+}
+
+class ClassNameDependency implements IDependencyDescriptor {
+    protected $className;
+    protected $constructorParams;
+    protected $flags;
+
+    public function __construct($className, $constructorParams = [], $flags = DependencyFlags::Singleton) {
+        $this->className = $className;
+        $this->constructorParams = $constructorParams;
+        $this->flags = $flags;
+    }
+
+    public function getDependencyFlags() {
+        return $this->flags;
+    }
+
+    public function createDependency(IDependencyContainer $container, IActivator $activator) {
+        return $activator->createInstanceArgs($this->className, $this->constructorParams);
+    }
+}
+
+class CallbackDependency implements IDependencyDescriptor {
+    protected $callback;
+    protected $flags;
+
+    public function __construct($callback, $flags = DependencyFlags::Singleton) {
+        $this->callback = $callback;
+        $this->flags = $flags;
+    }
+
+    public function getDependencyFlags() {
+        return $this->flags;
+    }
+
+    public function createDependency(IDependencyContainer $container, IActivator $activator) {
+        return call_user_func($this->callback, $container, $activator);
+    }
+}
+
 interface IDependencyFactory {
     public function createDependency($type, IDependencyContainer $container, IActivator $activator);
     public function getDependencyFlags($type);
@@ -69,7 +125,10 @@ interface IDependencyInjector {
 class RegistryBasedDependencyFactory implements IDependencyFactory {
     protected $types = [];
 
-    public function register($type, $createCallback, $flags = DependencyFlags::Singleton) {
+    public function register($type, IDependencyDescriptor $descriptor) {
+        $this->types[$type] = ['dd' => $descriptor, 'f' => $descriptor->getDependencyFlags()];
+    }
+    public function registerCallback($type, $createCallback, $flags = DependencyFlags::Singleton) {
         $this->types[$type] = ['cb' => $createCallback, 'f' =>$flags];
     }
     public function registerClass($type, $implementingClassName, array $constructorParams = [], $flags = DependencyFlags::Singleton) {
@@ -81,7 +140,9 @@ class RegistryBasedDependencyFactory implements IDependencyFactory {
     public function createDependency($type, IDependencyContainer $container, IActivator $activator) {
         if (!isset($this->types[$type])) return null;
         $t = $this->types[$type];
-        if (isset($t['obj'])) {
+        if (isset($t['dd'])) {
+            return $t['dd']->createDependency($container, $activator);
+        } elseif (isset($t['obj'])) {
             return $t['obj'];
         } elseif (isset($t['cb'])) {
             return call_user_func($t['cb'], $type, $container, $activator);
@@ -254,6 +315,12 @@ class Route {
     public $controllerId;
     public $actionId;
     public $params = [];
+
+    public function __construct($controllerId = null, $actionId = null, array $params = []) {
+        $this->controllerId = $controllerId;
+        $this->actionId = $actionId;
+        $this->params = $params;
+    }
 }
 
 interface IActionProcessor {
@@ -341,9 +408,9 @@ class ActionResultView {
 
     public function render(IViewManager $viewManager) {
         if (!empty($this->viewFilePath)) {
-            $view = $viewManager->loadViewFromFile($this->viewFilePath);
+            $view = $viewManager->loadViewFromFile($this->viewFilePath, $this->currentRoute);
         } else {
-            $view = $viewManager->loadView();
+            $view = $viewManager->loadView($this->controllerId, $this->actionId, $this->viewId, $this->currentRoute);
         }
         $view->setData($this->viewData);
         return $view->render();
@@ -475,7 +542,7 @@ class StdViewTemplateOutput {
             $this->contents[$this->current] = ob_get_contents();
             ob_clean();
             if (null === $name) {
-                ob_end();
+                ob_end_clean();
             }
         } elseif (null !== $name) {
             ob_start();
@@ -508,7 +575,7 @@ class StdViewTemplate {
         $this->currentRoute = $currentRoute;
     }
 
-    protected function renderField($fieldValue, $param1, $param2, $param3) {
+    protected function renderField($fieldValue, $param1 = null, $param2 = null, $param3 = null) {
         return $fieldValue;
     }
 }
@@ -544,6 +611,8 @@ class StdViewTemplateFactory {
                 list ($k, $v) = explode(':', $part, 2);
                 $tplSettings[$k] = $v;
             }
+            if ($contents[$p + 2] == "\r") $p++;  // skip new line char after closing tag
+            if ($contents[$p + 2] == "\n") $p++;
             $contents = substr($contents, $p + 2);
         }
         if (empty($tplSettings['class'])) $tplSettings['class'] = $defaultClassName;
@@ -556,7 +625,7 @@ class StdViewTemplateFactory {
         }
 
         if (!empty($tplSettings['ns'])) $php .= 'namespace ' . $tplSettings['ns'] . ";";
-        $php .= 'class ' . $tplSettings['class'] . ' extends ' . $tplSettings['base'] . ' { ';
+        $php .= 'class ' . $tplSettings['class'] . ' extends \\' . $tplSettings['base'] . ' { ';
 
         $p = strpos($contents, '<?php');
         if (false !== $p) {
@@ -647,7 +716,7 @@ class StdView implements IView {
     }
 }
 
-class StdViewManager implements IViewManager {
+class DefaultViewManager implements IViewManager {
     /**
      * @var StdViewTemplateFactory
      */
@@ -660,7 +729,7 @@ class StdViewManager implements IViewManager {
     protected $activator;
 
     /**
-     * @var IApplicationFileStructure
+     * @var IApplicationStructure
      * @inject
      */
     protected $appStructure;
@@ -688,7 +757,7 @@ interface IRoutingService {
     public function getRouteFromRequest(); // return route from request or default route
 }
 
-class StdRoutingService implements IRoutingService {
+class DefaultRoutingService implements IRoutingService {
     /**
      * @var Route
      */
@@ -713,23 +782,35 @@ class StdRoutingService implements IRoutingService {
     public function getRouteFromRequest() {
         if (empty($_GET['route'])) return $this->defaultRoute;
         $rt = explode('/', $_GET['route']);
-        $route = new Route();
-        $route->controllerId = $rt[0];
-        $route->actionId = $rt[1];
+        $route = new Route($rt[0], $rt[1]);
         // TODO: parametru
         return $route;
     }
 }
 
-interface IApplicationFileStructure {
+interface IApplicationStructure {
     public function getControllerFilePath($controllerId);
+    public function getControllerClassName($controllerId);
     public function getViewFilePath($controllerId, $viewId);
     public function getLayoutFilePath($layoutId);
+    public function getRoutingServiceDescriptor();
+    public function getViewManagerDescriptor();
 }
 
-class StdApplicationFileStructure implements IApplicationFileStructure {
+class DefaultApplicationStructure implements IApplicationStructure {
     public function getControllerFilePath($controllerId) {
         return sprintf('vc/controllers/%s.php', $controllerId);
+    }
+
+    protected function getControllerClassNamespace($controllerId) {
+        return '';
+    }
+
+    public function getControllerClassName($controllerId) {
+        $cls = StrUtils::spinalCaseToCamelCase($controllerId) . 'Controller';
+        $ns = $this->getControllerClassNamespace($controllerId);
+        if (!empty($ns)) $cls = $ns . '\\' . $cls;
+        return $cls;
     }
 
     public function getViewFilePath($controllerId, $viewId) {
@@ -738,6 +819,14 @@ class StdApplicationFileStructure implements IApplicationFileStructure {
 
     public function getLayoutFilePath($layoutId) {
         return sprintf('vc/views/_layouts/%s.tpl', $layoutId);
+    }
+
+    public function getRoutingServiceDescriptor() {
+        return new ClassNameDependency(DefaultRoutingService::class, [new Route('home', 'index')]);
+    }
+
+    public function getViewManagerDescriptor() {
+        return new ClassNameDependency(DefaultViewManager::class);
     }
 }
  
@@ -749,19 +838,19 @@ abstract class Application {
     protected $dc;
 
     /**
-     * @var IApplicationFileStructure
+     * @var IApplicationStructure
      */
-    protected $fileStructure;
+    protected $applicationStructure;
 
-    public function __construct(IApplicationFileStructure $fileStructure = null) {
+    public function __construct(IApplicationStructure $appStructure = null) {
         $this->dc = new DependencyContainer(new StdDependencyInjector());
         $this->dc->registration()->registerObject(Application::class, $this);
         $this->dc->registration()->registerObject(IDependencyContainer::class, $this->dc);
         $this->dc->registration()->registerObject(IActivator::class, $this->dc);
-        $this->fileStructure = $fileStructure ? $fileStructure : new StdApplicationFileStructure();
-        $this->dc->registration()->registerClass(IApplicationFileStructure::class, $this->fileStructure);
-        $this->dc->registration()->registerClass(IViewManager::class, StdViewManager::class);
-        $this->dc->registration()->registerClass(IRoutingService::class, StdRoutingService::class);
+        $this->applicationStructure = $appStructure ? $appStructure : new DefaultApplicationStructure();
+        $this->dc->registration()->registerClass(IApplicationStructure::class, $this->applicationStructure);
+        $this->dc->registration()->register(IViewManager::class, $appStructure->getViewManagerDescriptor());
+        $this->dc->registration()->register(IRoutingService::class, $appStructure->getRoutingServiceDescriptor());
     }
 
     protected function addDependencyFactory(IDependencyFactory $dependencyFactory) {
@@ -775,16 +864,7 @@ abstract class Application {
         return $this->dc->registration();
     }
 
-    protected function createRoutingService($type, IDependencyContainer $container, IActivator $activator) {
-     // nie
-    }
-
-    protected function createViewManager($type, IDependencyContainer $container, IActivator $activator) {
-        // nmie tak
-        // użyć service descriptor object
-    }
-
-    protected abstract function run();
+    public abstract function run();
 
     public function executeRoute(Route $route, RequestContext $actionContext) {
         $ap = $this->getActionProcessor($route);
@@ -804,9 +884,9 @@ abstract class Application {
      * @return IActionProcessor
      */
     protected function getActionProcessor(Route $route) {
-        $controllerFile = $this->fileStructure->getControllerFilePath($route->controllerId);
+        $controllerFile = $this->applicationStructure->getControllerFilePath($route->controllerId);
         require_once($controllerFile);
-        $controllerClass = StrUtils::spinalCaseToCamelCase($route->controllerId, true) . 'Controller';
+        $controllerClass = $this->applicationStructure->getControllerClassName($route->controllerId);
         $controllerInstance = $this->dc->createInstance($controllerClass);
         return $controllerInstance;
     }
