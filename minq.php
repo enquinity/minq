@@ -42,6 +42,11 @@ class DependencyFlags {
     const Singleton = 1;
 }
 
+interface IDependencyDescriptor {
+    public function getDependencyFlags();
+    public function createDependency(IDependencyContainer $container, IActivator $activator);
+}
+
 interface IDependencyFactory {
     public function createDependency($type, IDependencyContainer $container, IActivator $activator);
     public function getDependencyFlags($type);
@@ -50,6 +55,7 @@ interface IDependencyFactory {
 interface IActivator {
     public function createInstance($className); // next arguments = constructor parameters
     public function createInstanceArgs($className, array $constructorArgs);
+    public function injectInto($instance);
 }
 
 interface IDependencyContainer {
@@ -114,6 +120,10 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     public function registration() {
         return $this->factories[0];
     }
+
+    public function addFactory(IDependencyFactory $factory) {
+        $this->factories[] = $factory;
+    }
     
     public function resolve($type) {
         if (isset($this->singletons[$type])) return $this->singletons[$type];
@@ -153,6 +163,10 @@ class DependencyContainer implements IDependencyContainer, IActivator {
             call_user_func_array([$obj, '__construct'], $constructorArgs);
         }
         return $obj;
+    }
+
+    public function injectInto($instance) {
+        $this->injector->injectInto($instance, $this);
     }
 }
 
@@ -242,22 +256,6 @@ class Route {
     public $params = [];
 }
 
-interface IViewManager {
-    /**
-     * @param $viewFileName
-     * @return IView
-     */
-    public function loadViewFromFile($viewFileName);
-
-    /**
-     * @param $controllerId
-     * @param $actionId
-     * @param $viewId
-     * @return IView
-     */
-    public function loadView($controllerId, $actionId, $viewId);
-}
-
 interface IActionProcessor {
     /**
      * @param Route          $route
@@ -314,7 +312,42 @@ class ActionResultRedirectToRoute {
 }
 
 class ActionResultView {
+    protected $viewFilePath;
+    protected $viewId;
+    protected $controllerId;
+    protected $actionId;
+    protected $viewData;
 
+    /**
+     * @var Route
+     */
+    protected $currentRoute;
+
+    public function __construct($viewId, $controllerId, $actionId, Route $currentRoute, $viewData) {
+        $this->viewId = $viewId;
+        $this->controllerId = $controllerId;
+        $this->actionId = $actionId;
+        $this->currentRoute = $currentRoute;
+        $this->viewData = $viewData;
+    }
+
+    /**
+     * @return $this
+     */
+    public function fromFile($filePath) {
+        $this->viewFilePath = $filePath;
+        return $this;
+    }
+
+    public function render(IViewManager $viewManager) {
+        if (!empty($this->viewFilePath)) {
+            $view = $viewManager->loadViewFromFile($this->viewFilePath);
+        } else {
+            $view = $viewManager->loadView();
+        }
+        $view->setData($this->viewData);
+        return $view->render();
+    }
 }
 
 class Controller implements IActionProcessor {
@@ -373,7 +406,7 @@ class Controller implements IActionProcessor {
             $url = $this->routingService->getRouteUrl($result->getRoute());
             $response->setHeader("Location", $url);
         } elseif ($result instanceof ActionResultView) {
-            //...
+            $response->responseText = $result->render($this->viewManager);
         } else {
             $response->responseText = (string)$result;
         }
@@ -391,13 +424,18 @@ class Controller implements IActionProcessor {
         return $urlBuilder;
     }
 
-    public function view($viewData, $viewId = null) {
-        // zwraca obiekt IView, renderowanie jest w process action
-        $actionId = '';
-        $viewId = '';
-        $view = $this->viewManager->loadView($this->currentRoute->controllerId, $actionId, $viewId);
-        // przekazanie danych viewData do widoku
-        return $view;
+    public function view($viewData = [], $viewId = null) {
+        if (null === $viewId) {
+            $backtrace = debug_backtrace();
+            $caller = $backtrace[1]['function'];
+            if ('Action' == substr($caller, -6)) {
+                $viewId = StrUtils::camelCaseToSpinalCase(substr($caller, 0, -6));
+            } else {
+                throw new \Exception("Unable to obtain view id for caller $caller - caller is not action");
+            }
+        }
+        $result = new ActionResultView($viewId, $this->currentRoute->controllerId, $this->currentRoute->actionId, $this->currentRoute, $viewData);
+        return $result;
     }
 }
 
@@ -405,8 +443,26 @@ interface ILayoutController {
     public function render(array $renderedViewSections);
 }
 
+interface IViewManager {
+    /**
+     * @return IView
+     */
+    public function loadViewFromFile($viewFileName, Route $currentRoute);
+
+    /**
+     * @return IView
+     */
+    public function loadView($controllerId, $actionId, $viewId, Route $currentRoute);
+}
+
 interface IView {
+    /**
+     * @return string Rendered output
+     */
     public function render();
+
+    public function setData($viewData);
+    public function set($param, $value);
 }
 
 class StdViewTemplateOutput {
@@ -448,7 +504,7 @@ class StdViewTemplate {
      */
     protected $currentRoute;
 
-    public function init(Route $currentRoute) {
+    public function initialize(Route $currentRoute) {
         $this->currentRoute = $currentRoute;
     }
 
@@ -531,11 +587,95 @@ class StdViewTemplateFactory {
     }
 }
 
-class StdViewTemplateView implements IView {
-    protected $template;
+class StdView implements IView {
+    /**
+     * @var StdViewTemplateFactory
+     */
+    protected $tplFactory;
+
+    /**
+     * @var Route
+     */
+    protected $currentRoute;
+
+    /**
+     * @var IActivator
+     */
+    protected $activator;
+
+    protected $viewFilePath;
+
+    protected $viewData = [];
+
+    /**
+     * StdViewTemplateView constructor.
+     * @param StdViewTemplateFactory $tplFactory
+     * @param Route                  $currentRoute
+     * @param IActivator             $activator
+     * @param                        $viewFilePath
+     */
+    public function __construct(StdViewTemplateFactory $tplFactory, Route $currentRoute, IActivator $activator, $viewFilePath) {
+        $this->tplFactory = $tplFactory;
+        $this->currentRoute = $currentRoute;
+        $this->activator = $activator;
+        $this->viewFilePath = $viewFilePath;
+    }
 
     public function render() {
-        
+        $template = $this->tplFactory->loadFromFile(
+            $this->viewFilePath, null, null, StdViewTemplate::class, 'render'
+        );
+        $template->initialize($this->currentRoute);
+        $this->activator->injectInto($template);
+        foreach ($this->viewData as $k => $v) {
+            $template->$k = $v;
+        }
+        $result = $template->render();
+        // TODO: obsługa layoutu
+        if (is_array($result)) $result = $result['default'];
+        return $result;
+    }
+
+    public function setData($viewData) {
+        foreach ($viewData as $k => $v) {
+            $this->viewData[$k] = $v;
+        }
+    }
+
+    public function set($param, $value) {
+        $this->viewData[$param] = $value;
+    }
+}
+
+class StdViewManager implements IViewManager {
+    /**
+     * @var StdViewTemplateFactory
+     */
+    protected $tplFactory;
+
+    /**
+     * @var IActivator
+     * @inject
+     */
+    protected $activator;
+
+    /**
+     * @var IApplicationFileStructure
+     * @inject
+     */
+    protected $appStructure;
+
+    public function __construct() {
+        $this->tplFactory = new StdViewTemplateFactory();
+    }
+
+    public function loadViewFromFile($viewFileName, Route $currentRoute) {
+        $view = new StdView($this->tplFactory, $currentRoute, $this->activator, $viewFileName);
+        return $view;
+    }
+
+    public function loadView($controllerId, $actionId, $viewId, Route $currentRoute) {
+        return $this->loadViewFromFile($this->appStructure->getViewFilePath($controllerId, $viewId), $currentRoute);
     }
 }
 
@@ -546,6 +686,39 @@ interface IRoutingService {
      * @return Route
      */
     public function getRouteFromRequest(); // return route from request or default route
+}
+
+class StdRoutingService implements IRoutingService {
+    /**
+     * @var Route
+     */
+    protected $defaultRoute;
+
+    /**
+     * @param Route $defaultRoute
+     */
+    public function __construct(Route $defaultRoute) {
+        $this->defaultRoute = $defaultRoute;
+    }
+
+    public function getRouteUrl(Route $route) {
+        $url = 'index.php?route=' . $route->controllerId . '/' . $route->actionId;
+        // TODO: parametry
+        return $url;
+    }
+
+    /**
+     * @return Route
+     */
+    public function getRouteFromRequest() {
+        if (empty($_GET['route'])) return $this->defaultRoute;
+        $rt = explode('/', $_GET['route']);
+        $route = new Route();
+        $route->controllerId = $rt[0];
+        $route->actionId = $rt[1];
+        // TODO: parametru
+        return $route;
+    }
 }
 
 interface IApplicationFileStructure {
@@ -568,7 +741,7 @@ class StdApplicationFileStructure implements IApplicationFileStructure {
     }
 }
  
-class Application {
+abstract class Application {
 
     /**
      * @var DependencyContainer
@@ -586,14 +759,39 @@ class Application {
         $this->dc->registration()->registerObject(IDependencyContainer::class, $this->dc);
         $this->dc->registration()->registerObject(IActivator::class, $this->dc);
         $this->fileStructure = $fileStructure ? $fileStructure : new StdApplicationFileStructure();
+        $this->dc->registration()->registerClass(IApplicationFileStructure::class, $this->fileStructure);
+        $this->dc->registration()->registerClass(IViewManager::class, StdViewManager::class);
+        $this->dc->registration()->registerClass(IRoutingService::class, StdRoutingService::class);
     }
+
+    protected function addDependencyFactory(IDependencyFactory $dependencyFactory) {
+        $this->dc->addFactory($dependencyFactory);
+    }
+
+    /**
+     * @return RegistryBasedDependencyFactory
+     */
+    protected function dependencyRegistry() {
+        return $this->dc->registration();
+    }
+
+    protected function createRoutingService($type, IDependencyContainer $container, IActivator $activator) {
+     // nie
+    }
+
+    protected function createViewManager($type, IDependencyContainer $container, IActivator $activator) {
+        // nmie tak
+        // użyć service descriptor object
+    }
+
+    protected abstract function run();
 
     public function executeRoute(Route $route, RequestContext $actionContext) {
         $ap = $this->getActionProcessor($route);
         return $ap->processRoute($route, $actionContext);
     }
 
-    public function executeCurrentRequest() {
+    protected function executeCurrentRequest() {
         /* @var $routingSvc IRoutingService */
         $routingSvc = $this->dc->resolve(IRoutingService::class);
         $route = $routingSvc->getRouteFromRequest();
