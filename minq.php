@@ -506,9 +506,6 @@ class Controller implements IActionProcessor {
     }
 }
 
-interface ILayoutController {
-    public function render(array $renderedViewSections);
-}
 
 interface IViewManager {
     /**
@@ -565,18 +562,74 @@ class StdViewTemplateOutput {
     }
 }
 
-class StdViewTemplate {
+abstract class StdViewTemplate implements IView {
     /**
      * @var Route
      */
     protected $currentRoute;
 
+    /**
+     * @var StdViewTemplate
+     */
+    protected $layout;
+
+    /**
+     * @var IDependencyContainer
+     * @inject
+     */
+    protected $_dc;
+
+    public static $_metaData;
+
     public function initialize(Route $currentRoute) {
         $this->currentRoute = $currentRoute;
+        $metaData = self::$_metaData;
+        if (is_array($metaData) && !empty($metaData['layout'])) {
+            $this->layout($metaData['layout']);
+        }
     }
 
     protected function renderField($fieldValue, $param1 = null, $param2 = null, $param3 = null) {
         return $fieldValue;
+    }
+
+    protected function getLayout() {return $this->layout;}
+
+    protected function layoutFromFile($layoutTplFile) {
+        /* @var $vm IViewManager */
+        $vm = $this->_dc->resolve(IViewManager::class);
+        $this->layout = $vm->loadViewFromFile($layoutTplFile, $this->currentRoute);
+        return $this->layout;
+    }
+
+    protected function layout($layoutId) {
+        /* @var $as IApplicationStructure */
+        $as = $this->_dc->resolve(IApplicationStructure::class);
+        return $this->layoutFromFile($as->getLayoutFilePath($layoutId));
+    }
+
+    protected abstract function renderContents();
+
+    public function render() {
+        $contents = $this->renderContents();
+
+        if ($this->layout !== null) {
+            if (!is_array($contents)) $contents = ['default' => $contents];
+            $this->layout->set('VIEW_PARTS', $contents);
+            $contents = $this->layout->render();
+        }
+        if (is_array($contents)) $contents = $contents['default'];
+        return $contents;
+    }
+
+    public function setData($viewData) {
+        foreach ($viewData as $k => $v) {
+            $this->$k = $v;
+        }
+    }
+
+    public function set($param, $value) {
+        $this->$param = $value;
     }
 }
 
@@ -600,7 +653,7 @@ class StdViewTemplateFactory {
     }
 
     protected function loadClass($contents, $fileName, $defaultClassName, $defaultNs, $defaultBaseClass, $renderMethodName) {
-        $tplSettings = [];
+        $tplMetaData = [];
         $php = '';
         if ('<?tpl' == substr($contents, 0, 5)) {
             $p = strpos($contents, '?>');
@@ -609,23 +662,23 @@ class StdViewTemplateFactory {
             foreach (explode(' ', $ic) as $part) {
                 if (empty($part)) continue;
                 list ($k, $v) = explode(':', $part, 2);
-                $tplSettings[$k] = $v;
+                $tplMetaData[$k] = $v;
             }
             if ($contents[$p + 2] == "\r") $p++;  // skip new line char after closing tag
             if ($contents[$p + 2] == "\n") $p++;
             $contents = substr($contents, $p + 2);
         }
-        if (empty($tplSettings['class'])) $tplSettings['class'] = $defaultClassName;
-        if (empty($tplSettings['ns'])) $tplSettings['ns'] = $defaultNs;
-        if (empty($tplSettings['base'])) $tplSettings['base'] = $defaultBaseClass;
+        if (empty($tplMetaData['class'])) $tplMetaData['class'] = $defaultClassName;
+        if (empty($tplMetaData['ns'])) $tplMetaData['ns'] = $defaultNs;
+        if (empty($tplMetaData['base'])) $tplMetaData['base'] = $defaultBaseClass;
 
-        $fullClassName = !empty($tplSettings['ns']) ? $tplSettings['ns'] . '\\' . $tplSettings['class'] : $tplSettings['class'];
+        $fullClassName = !empty($tplMetaData['ns']) ? $tplMetaData['ns'] . '\\' . $tplMetaData['class'] : $tplMetaData['class'];
         if (isset($this->loadedCache[$fullClassName])) {
             return $fullClassName;
         }
 
-        if (!empty($tplSettings['ns'])) $php .= 'namespace ' . $tplSettings['ns'] . ";";
-        $php .= 'class ' . $tplSettings['class'] . ' extends \\' . $tplSettings['base'] . ' { ';
+        if (!empty($tplMetaData['ns'])) $php .= 'namespace ' . $tplMetaData['ns'] . ";";
+        $php .= 'class ' . $tplMetaData['class'] . ' extends \\' . $tplMetaData['base'] . ' { ';
 
         $p = strpos($contents, '<?php');
         if (false !== $p) {
@@ -651,68 +704,9 @@ class StdViewTemplateFactory {
         if (false === $result) {
             throw new TplSyntaxErrorException(!empty($fileName) ? "Tpl syntax error in file $fileName": "Tpl syntax error");
         }
+        $fullClassName::$_metaData = $tplMetaData;
         $this->loadedCache[$fullClassName] = true;
         return $fullClassName;
-    }
-}
-
-class StdView implements IView {
-    /**
-     * @var StdViewTemplateFactory
-     */
-    protected $tplFactory;
-
-    /**
-     * @var Route
-     */
-    protected $currentRoute;
-
-    /**
-     * @var IActivator
-     */
-    protected $activator;
-
-    protected $viewFilePath;
-
-    protected $viewData = [];
-
-    /**
-     * StdViewTemplateView constructor.
-     * @param StdViewTemplateFactory $tplFactory
-     * @param Route                  $currentRoute
-     * @param IActivator             $activator
-     * @param                        $viewFilePath
-     */
-    public function __construct(StdViewTemplateFactory $tplFactory, Route $currentRoute, IActivator $activator, $viewFilePath) {
-        $this->tplFactory = $tplFactory;
-        $this->currentRoute = $currentRoute;
-        $this->activator = $activator;
-        $this->viewFilePath = $viewFilePath;
-    }
-
-    public function render() {
-        $template = $this->tplFactory->loadFromFile(
-            $this->viewFilePath, null, null, StdViewTemplate::class, 'render'
-        );
-        $template->initialize($this->currentRoute);
-        $this->activator->injectInto($template);
-        foreach ($this->viewData as $k => $v) {
-            $template->$k = $v;
-        }
-        $result = $template->render();
-        // TODO: obsługa layoutu
-        if (is_array($result)) $result = $result['default'];
-        return $result;
-    }
-
-    public function setData($viewData) {
-        foreach ($viewData as $k => $v) {
-            $this->viewData[$k] = $v;
-        }
-    }
-
-    public function set($param, $value) {
-        $this->viewData[$param] = $value;
     }
 }
 
@@ -739,7 +733,10 @@ class DefaultViewManager implements IViewManager {
     }
 
     public function loadViewFromFile($viewFileName, Route $currentRoute) {
-        $view = new StdView($this->tplFactory, $currentRoute, $this->activator, $viewFileName);
+        //$view = new StdView($this->tplFactory, $currentRoute, $this->activator, $viewFileName);
+        $view = $this->tplFactory->loadFromFile($viewFileName, null, null, StdViewTemplate::class, 'renderContents');
+        $this->activator->injectInto($view);
+        $view->initialize($currentRoute);
         return $view;
     }
 
