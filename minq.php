@@ -231,10 +231,33 @@ class DependencyContainer implements IDependencyContainer, IActivator {
     }
 }
 
+trait InjectOnDemand {
+    private $onDemandInjections;
+
+    /**
+     * @var \minq\IDependencyContainer
+     * @inject
+     */
+    private $onDemandDependencyContainer;
+
+    public function __get($propertyName) {
+        if (isset($this->onDemandInjections[$propertyName])) {
+            return $this->$propertyName = $this->onDemandDependencyContainer->resolve($this->onDemandInjections[$propertyName]);
+        }
+        throw new \Exception("Property $propertyName is undefined in class " . get_class($this));
+    }
+
+    public function initOnDemandInjections(array $onDemandInjections) {
+        foreach ($onDemandInjections as $k => $v) unset($this->$k);
+        $this->onDemandInjections = $onDemandInjections;
+    }
+}
+
 class StdDependencyInjector implements IDependencyInjector {
     public function injectInto($object, IDependencyContainer $container) {
         $reflClass = new \ReflectionClass($object);
         $nsName = $reflClass->getNamespaceName();
+        $onDemandInjections = [];
         foreach ($reflClass->getProperties() as $reflProperty) {
             $dc = $reflProperty->getDocComment();
             $injectAnnotation = StrUtils::getAnnotationValue($dc, 'inject');
@@ -246,10 +269,17 @@ class StdDependencyInjector implements IDependencyInjector {
                     if ('\\' !== $type[0] && !empty($ns)) $type = $ns . '\\' . $type;
                     if ('\\' == $type[0]) $type = substr($type, 1);
 
-                    $reflProperty->setAccessible(true);
-                    $reflProperty->setValue($object, $container->resolve($type));
+                    if (true === $injectAnnotation) {
+                        $reflProperty->setAccessible(true);
+                        $reflProperty->setValue($object, $container->resolve($type));
+                    } elseif ('on-demand' === $injectAnnotation || 'onDemand' === $injectAnnotation) {
+                        $onDemandInjections[$reflProperty->getName()] = $type;
+                    }
                 }
             }
+        }
+        if (count($onDemandInjections) > 0) {
+            $object->initOnDemandInjections($onDemandInjections);
         }
     }
 }
