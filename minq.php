@@ -22,10 +22,15 @@ class StrUtils {
         return $str;
     }
 
-    public static function getAnnotationValue($docComment, $annotationName) {
+    public static function getAnnotationValue($docComment, $annotationName, $namespace = 'minq', $strictNamespace = false) {
         $dcl = strlen($docComment);
-        for ($p = -1; true;) {
-            $p = strpos($docComment, '@' . $annotationName, $p + 1);
+        for ($p = false; true;) {
+            if (!empty($namespace)) {
+                $p = strpos($docComment, '@' . $namespace . ':' . $annotationName, false === $p ? 0 : $p + 1);
+            }
+            if ((false === $p) && (empty($namespace) || !$strictNamespace)) {
+                $p = strpos($docComment, '@' . $annotationName, false === $p ? 0 : $p + 1);
+            }
             if ($p === false) return null;
             $nextCharPos = $p + 1 + strlen($annotationName);
             if ($dcl == $nextCharPos) return true;
@@ -822,6 +827,11 @@ interface IApplicationStructure {
     public function getLayoutFilePath($layoutId);
     public function getRoutingServiceDescriptor();
     public function getViewManagerDescriptor();
+
+    /**
+     * @return DependencyContainer
+     */
+    public function createDependencyCointainer();
 }
 
 class DefaultApplicationStructure implements IApplicationStructure {
@@ -855,6 +865,13 @@ class DefaultApplicationStructure implements IApplicationStructure {
     public function getViewManagerDescriptor() {
         return new ClassNameDependency(DefaultViewManager::class);
     }
+
+    /**
+     * @return DependencyContainer
+     */
+    public function createDependencyCointainer() {
+        return new DependencyContainer(new StdDependencyInjector());
+    }
 }
  
 abstract class Application {
@@ -870,12 +887,13 @@ abstract class Application {
     protected $applicationStructure;
 
     public function __construct(IApplicationStructure $appStructure = null) {
-        $this->dc = new DependencyContainer(new StdDependencyInjector());
+        $this->applicationStructure = $appStructure ? $appStructure : new DefaultApplicationStructure();
+        $this->dc = $this->applicationStructure->createDependencyCointainer();
         $this->dc->registration()->registerObject(Application::class, $this);
+        $this->dc->registration()->registerObject(get_class($this), $this);
         $this->dc->registration()->registerObject(IDependencyContainer::class, $this->dc);
         $this->dc->registration()->registerObject(IActivator::class, $this->dc);
-        $this->applicationStructure = $appStructure ? $appStructure : new DefaultApplicationStructure();
-        $this->dc->registration()->registerClass(IApplicationStructure::class, $this->applicationStructure);
+        $this->dc->registration()->registerObject(IApplicationStructure::class, $this->applicationStructure);
         $this->dc->registration()->register(IViewManager::class, $appStructure->getViewManagerDescriptor());
         $this->dc->registration()->register(IRoutingService::class, $appStructure->getRoutingServiceDescriptor());
     }
